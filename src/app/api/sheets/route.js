@@ -1,8 +1,13 @@
 import { google } from 'googleapis';
 import { NextResponse } from 'next/server';
 
-export async function GET() {
+export const dynamic = 'force-dynamic';
+
+export async function GET(request) {
   try {
+    const { searchParams } = new URL(request.url);
+    const company = searchParams.get('company') || 'lescent';
+
     let credentialsStr = process.env.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS;
     if (!credentialsStr) {
       return NextResponse.json({ error: 'Credenciais ausentes no .env.local.' }, { status: 401 });
@@ -14,13 +19,28 @@ export async function GET() {
     }
 
     const credentials = JSON.parse(credentialsStr);
-    let spreadsheetId = process.env.SPREADSHEET_ID;
+    
+    // Map company to spreadsheet ID
+    let spreadsheetId = '';
+    const compKey = company.toLowerCase().trim();
+    if (compKey === 'lescent') {
+      spreadsheetId = process.env.SPREADSHEET_ID_LESCENT || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'aua') {
+      spreadsheetId = process.env.SPREADSHEET_ID_AUA || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'bysamia' || compKey === 'by_samia') {
+      spreadsheetId = process.env.SPREADSHEET_ID_BYSAMIA || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'kokeshi') {
+      spreadsheetId = process.env.SPREADSHEET_ID_KOKESHI || process.env.SPREADSHEET_ID;
+    } else {
+      spreadsheetId = process.env.SPREADSHEET_ID;
+    }
+
     if (spreadsheetId && spreadsheetId.startsWith("'") && spreadsheetId.endsWith("'")) {
       spreadsheetId = spreadsheetId.slice(1, -1);
     }
 
     if (!spreadsheetId) {
-      return NextResponse.json({ error: 'Falta o SPREADSHEET_ID no .env.local.' }, { status: 400 });
+      return NextResponse.json({ error: `Falta o SPREADSHEET_ID para a marca ${company} no .env.local.` }, { status: 400 });
     }
 
     const auth = new google.auth.GoogleAuth({

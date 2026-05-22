@@ -7,7 +7,7 @@ import {
 } from 'recharts';
 import { 
   Package, DollarSign, Truck, CalendarClock, AlertCircle, RefreshCw, 
-  ChevronLeft, ChevronRight, Calendar, ArrowUpDown, ArrowUp, ArrowDown 
+  ChevronLeft, ChevronRight, Calendar, ArrowUpDown, ArrowUp, ArrowDown, X, Zap
 } from 'lucide-react';
 import styles from './page.module.css';
 
@@ -53,6 +53,16 @@ const formatDate = (dateStr) => {
   }
 };
 
+const formatMonthPTBR = (yyyyMM) => {
+  if (!yyyyMM) return '';
+  const [year, month] = yyyyMM.split('-');
+  const months = {
+    '01': 'jan.', '02': 'fev.', '03': 'mar.', '04': 'abr.', '05': 'mai.', '06': 'jun.',
+    '07': 'jul.', '08': 'ago.', '09': 'set.', '10': 'out.', '11': 'nov.', '12': 'dez.'
+  };
+  return `${months[month] || month}/${year.slice(2)}`;
+};
+
 // Definição dos campos da Tabela para fácil expansão futura
 const TABLE_COLUMNS = [
   { key: 'external_id_original', label: 'ID Original' },
@@ -73,6 +83,16 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
+  // Marca ativa para visualização no Dashboard
+  const [selectedBrand, setSelectedBrand] = useState('lescent');
+
+  // Estados para Sincronização via n8n
+  const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [syncCompany, setSyncCompany] = useState('lescent');
+  const [syncYear, setSyncYear] = useState('todos');
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncMessage, setSyncMessage] = useState(null);
+
   // Filtro de Período Oficial (Data de Criação Original)
   const [filterStartDate, setFilterStartDate] = useState(null);
   const [filterEndDate, setFilterEndDate] = useState(null);
@@ -91,6 +111,9 @@ export default function Dashboard() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(15);
 
+  const [activeTab, setActiveTab] = useState('geral');
+  const [cohortMetric, setCohortMetric] = useState('receita');
+
   const popoverRef = useRef(null);
 
   // Fechar calendário ao clicar fora
@@ -104,11 +127,11 @@ export default function Dashboard() {
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const fetchData = async () => {
+  const fetchData = async (brand = selectedBrand) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/sheets');
+      const res = await fetch(`/api/sheets?company=${brand}&t=${Date.now()}`, { cache: 'no-store' });
       const json = await res.ok ? await res.json() : null;
       
       if (!res.ok || !json) {
@@ -123,14 +146,80 @@ export default function Dashboard() {
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
+  const handleBrandChange = (brand) => {
+    setSelectedBrand(brand);
+    setSyncCompany(brand);
+  };
 
-  // Filtrar apenas linhas com ID válido
+  const handleSyncSubmit = async (e) => {
+    if (e) e.preventDefault();
+    setIsSyncing(true);
+    setSyncMessage(null);
+    try {
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          company: syncCompany,
+          year: syncYear
+        }),
+      });
+
+      const json = await res.json();
+
+      if (!res.ok || !json.success) {
+        throw new Error(json.error || 'Erro ao sincronizar dados com o n8n');
+      }
+
+      setSyncMessage({
+        type: 'success',
+        text: 'Sincronização iniciada com sucesso! Atualizando painel...'
+      });
+
+      // Se a marca sincronizada no modal for diferente da ativa, muda a ativa para disparar o useEffect
+      if (syncCompany !== selectedBrand) {
+        setSelectedBrand(syncCompany);
+      } else {
+        // Se já for a mesma, recarrega os dados diretamente
+        await fetchData(selectedBrand);
+      }
+
+      // Fechar modal após sucesso
+      setTimeout(() => {
+        setIsSyncModalOpen(false);
+        setSyncMessage(null);
+      }, 2000);
+    } catch (err) {
+      setSyncMessage({
+        type: 'error',
+        text: `Falha na sincronização: ${err.message}`
+      });
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchData(selectedBrand);
+  }, [selectedBrand]);
+
+  // Filtrar apenas linhas com ID válido e que pertencem à marca ativa
   const validData = useMemo(() => {
-    return data.filter(item => item.external_id_original);
-  }, [data]);
+    return data.filter(item => {
+      if (!item.external_id_original) return false;
+      
+      // Se a planilha tiver a coluna empresa, filtramos por ela
+      if (item.empresa) {
+        const itemBrand = String(item.empresa).toLowerCase().trim().replace(/[\s_-]/g, '');
+        const currentBrand = String(selectedBrand).toLowerCase().trim().replace(/[\s_-]/g, '');
+        return itemBrand === currentBrand;
+      }
+      
+      return true;
+    });
+  }, [data, selectedBrand]);
 
   // Aplicar os Filtros nos Dados (usando data_criacao_original como principal)
   const filteredData = useMemo(() => {
@@ -267,6 +356,92 @@ export default function Dashboard() {
       Reenvios: daysDistribution[key]
     }));
   }, [filteredData]);
+
+  // 1. Auxiliares da Coorte
+  const cohortMatrix = useMemo(() => {
+    const formatMonthKey = (dateStr) => {
+      if (!dateStr || dateStr === 'N/A') return null;
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return null;
+      const year = d.getFullYear();
+      const month = String(d.getMonth() + 1).padStart(2, '0');
+      return `${year}-${month}`; // YYYY-MM
+    };
+
+    const matrix = {};
+    const rowMonthsSet = new Set();
+    const colMonthsSet = new Set();
+    let maxCellValue = 0;
+
+    validData.forEach(item => {
+      const oMonth = formatMonthKey(item.data_criacao_original);
+      const rMonth = formatMonthKey(item.data_criacao_reenvio);
+      if (!oMonth || !rMonth) return;
+
+      rowMonthsSet.add(oMonth);
+      colMonthsSet.add(rMonth);
+
+      let val = 0;
+      if (cohortMetric === 'receita') {
+        val = parseCurrencyValue(item.total_amount);
+      } else if (cohortMetric === 'frete') {
+        val = parseCurrencyValue(item.frete);
+      } else {
+        val = 1; // quantidade
+      }
+
+      if (!matrix[oMonth]) matrix[oMonth] = {};
+      matrix[oMonth][rMonth] = (matrix[oMonth][rMonth] || 0) + val;
+    });
+
+    const rows = Array.from(rowMonthsSet).sort();
+    const cols = Array.from(colMonthsSet).sort();
+
+    const rowTotals = {};
+    const colTotals = {};
+    let grandTotal = 0;
+
+    rows.forEach(r => {
+      rowTotals[r] = 0;
+      cols.forEach(c => {
+        const val = matrix[r]?.[c] || 0;
+        rowTotals[r] += val;
+        colTotals[c] = (colTotals[c] || 0) + val;
+        grandTotal += val;
+        if (val > maxCellValue) {
+          maxCellValue = val;
+        }
+      });
+    });
+
+    return {
+      matrix,
+      rows,
+      cols,
+      rowTotals,
+      colTotals,
+      grandTotal,
+      maxCellValue
+    };
+  }, [validData, cohortMetric]);
+
+  const getCellBgStyle = (value, maxVal) => {
+    if (!value || maxVal === 0) return {};
+    const opacity = 0.05 + (value / maxVal) * 0.75;
+    return {
+      background: `rgba(38, 89, 165, ${opacity})`,
+      color: opacity > 0.45 ? '#ffffff' : 'var(--text-primary)',
+      fontWeight: '600'
+    };
+  };
+
+  const formatCohortValue = (val) => {
+    if (val === undefined || val === null || val === 0) return '-';
+    if (cohortMetric === 'quantidade') {
+      return new Intl.NumberFormat('pt-BR').format(val);
+    }
+    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2 }).format(val);
+  };
 
   // Configuração do Ordenamento
   const handleSort = (key) => {
@@ -459,7 +634,6 @@ export default function Dashboard() {
   };
 
   return (
-
     <div className={styles.container}>
       {/* Header */}
       <div className={styles.header}>
@@ -467,99 +641,59 @@ export default function Dashboard() {
           <h1 className={styles.title}>Dashboard de Reenvios</h1>
           <p className={styles.subtitle}>Gogroup / Gocase Performance Analysis</p>
         </div>
-        <button className={styles.clearButton} onClick={fetchData} disabled={loading} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <RefreshCw size={16} className={loading ? 'spin' : ''} /> Atualizar Dados
-        </button>
-      </div>
-
-      {/* Painel de Filtros */}
-      <div className={styles.filterSection}>
-        <div className={styles.filterGroup} ref={popoverRef}>
-          <label>Filtrar por Período</label>
-          <div className={styles.dateDisplayInput} onClick={() => setIsCalendarOpen(!isCalendarOpen)}>
-            <span>{getFilterText()}</span>
-            <Calendar size={18} color="var(--accent-primary)" />
+        <div className={styles.headerActions}>
+          <div className={styles.brandSelectorGroup}>
+            <label htmlFor="header-brand-select" className={styles.brandSelectorLabel}>Marca Ativa</label>
+            <select
+              id="header-brand-select"
+              value={selectedBrand}
+              onChange={(e) => handleBrandChange(e.target.value)}
+              className={styles.brandSelectorSelect}
+              disabled={loading || isSyncing}
+            >
+              <option value="lescent">Lescent</option>
+              <option value="aua">Aua</option>
+              <option value="bysamia">By Samia</option>
+              <option value="kokeshi">Kokeshi</option>
+            </select>
           </div>
 
-          {isCalendarOpen && (
-            <div className={styles.calendarPopover}>
-              {/* Sidebar de Atalhos Rápidos */}
-              <div className={styles.calendarSidebar}>
-                <button 
-                  onClick={() => applyQuickFilter('hoje')} 
-                  className={`${styles.quickFilterBtn} ${activeQuickFilter === 'hoje' ? styles.quickFilterBtnActive : ''}`}
-                >
-                  Hoje
-                </button>
-                <button 
-                  onClick={() => applyQuickFilter('7dias')} 
-                  className={`${styles.quickFilterBtn} ${activeQuickFilter === '7dias' ? styles.quickFilterBtnActive : ''}`}
-                >
-                  Últimos 7 dias
-                </button>
-                <button 
-                  onClick={() => applyQuickFilter('semana')} 
-                  className={`${styles.quickFilterBtn} ${activeQuickFilter === 'semana' ? styles.quickFilterBtnActive : ''}`}
-                >
-                  Esta Semana
-                </button>
-                <button 
-                  onClick={() => applyQuickFilter('mes')} 
-                  className={`${styles.quickFilterBtn} ${activeQuickFilter === 'mes' ? styles.quickFilterBtnActive : ''}`}
-                >
-                  Este Mês
-                </button>
-                <button 
-                  onClick={() => applyQuickFilter('tudo')} 
-                  className={`${styles.quickFilterBtn} ${activeQuickFilter === 'tudo' ? styles.quickFilterBtnActive : ''}`}
-                >
-                  Limpar Tudo
-                </button>
-              </div>
-
-              {/* Área Principal do Calendário */}
-              <div className={styles.calendarMain}>
-                <div className={styles.calendarHeader}>
-                  <button onClick={() => changeMonth(-1)}><ChevronLeft size={18} /></button>
-                  <span className={styles.monthName}>
-                    {currentMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
-                  </span>
-                  <button onClick={() => changeMonth(1)}><ChevronRight size={18} /></button>
-                </div>
-
-                <div className={styles.calendarGrid}>
-                  {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((day, idx) => (
-                    <div key={idx} className={styles.weekdayHeader}>{day}</div>
-                  ))}
-                  {calendarDays.map((day, idx) => (
-                    <div 
-                      key={idx}
-                      onClick={() => handleDayClick(day)}
-                      className={`${styles.dayCell} ${getDayClass(day)}`}
-                    >
-                      {day ? day.getDate() : ''}
-                    </div>
-                  ))}
-                </div>
-
-                <div className={styles.calendarActions}>
-                  <button className={styles.clearButton} onClick={clearFilters} style={{ height: 'auto', padding: '0.4rem 0.8rem' }}>
-                    Resetar
-                  </button>
-                  <button className={styles.applyButton} onClick={applyFilters}>
-                    Aplicar
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {(filterStartDate || filterEndDate) && (
-          <button onClick={clearFilters} className={styles.clearButton}>
-            Limpar Filtros
+          <button 
+            className={styles.clearButton} 
+            onClick={() => fetchData(selectedBrand)} 
+            disabled={loading || isSyncing}
+            style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}
+          >
+            <RefreshCw size={16} className={loading ? 'spin' : ''} />
+            Atualizar Planilha
           </button>
-        )}
+
+          <button 
+            className={styles.syncButton} 
+            onClick={() => { setIsSyncModalOpen(true); setSyncMessage(null); }} 
+            disabled={loading || isSyncing}
+            style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}
+          >
+            <Zap size={16} />
+            Disparar Fluxo n8n
+          </button>
+        </div>
+      </div>
+
+      {/* Navegação por Abas */}
+      <div className={styles.tabContainer}>
+        <button 
+          onClick={() => setActiveTab('geral')}
+          className={`${styles.tabButton} ${activeTab === 'geral' ? styles.tabButtonActive : ''}`}
+        >
+          Visão Geral
+        </button>
+        <button 
+          onClick={() => setActiveTab('coorte')}
+          className={`${styles.tabButton} ${activeTab === 'coorte' ? styles.tabButtonActive : ''}`}
+        >
+          Análise de Coorte
+        </button>
       </div>
 
       {loading ? (
@@ -578,8 +712,98 @@ export default function Dashboard() {
             <div className={styles.chartCard} style={{ height: '350px' }}><div className={styles.skeleton} style={{ width: '100%', height: '100%' }}></div></div>
           </div>
         </>
-      ) : (
+      ) : activeTab === 'geral' ? (
         <>
+          {/* Painel de Filtros */}
+          <div className={styles.filterSection}>
+            <div className={styles.filterGroup} ref={popoverRef}>
+              <label>Filtrar por Período</label>
+              <div className={styles.dateDisplayInput} onClick={() => setIsCalendarOpen(!isCalendarOpen)}>
+                <span>{getFilterText()}</span>
+                <Calendar size={18} color="var(--accent-primary)" />
+              </div>
+
+              {isCalendarOpen && (
+                <div className={styles.calendarPopover}>
+                  {/* Sidebar de Atalhos Rápidos */}
+                  <div className={styles.calendarSidebar}>
+                    <button 
+                      onClick={() => applyQuickFilter('hoje')} 
+                      className={`${styles.quickFilterBtn} ${activeQuickFilter === 'hoje' ? styles.quickFilterBtnActive : ''}`}
+                    >
+                      Hoje
+                    </button>
+                    <button 
+                      onClick={() => applyQuickFilter('7dias')} 
+                      className={`${styles.quickFilterBtn} ${activeQuickFilter === '7dias' ? styles.quickFilterBtnActive : ''}`}
+                    >
+                      Últimos 7 dias
+                    </button>
+                    <button 
+                      onClick={() => applyQuickFilter('semana')} 
+                      className={`${styles.quickFilterBtn} ${activeQuickFilter === 'semana' ? styles.quickFilterBtnActive : ''}`}
+                    >
+                      Esta Semana
+                    </button>
+                    <button 
+                      onClick={() => applyQuickFilter('mes')} 
+                      className={`${styles.quickFilterBtn} ${activeQuickFilter === 'mes' ? styles.quickFilterBtnActive : ''}`}
+                    >
+                      Este Mês
+                    </button>
+                    <button 
+                      onClick={() => applyQuickFilter('tudo')} 
+                      className={`${styles.quickFilterBtn} ${activeQuickFilter === 'tudo' ? styles.quickFilterBtnActive : ''}`}
+                    >
+                      Limpar Tudo
+                    </button>
+                  </div>
+
+                  {/* Área Principal do Calendário */}
+                  <div className={styles.calendarMain}>
+                    <div className={styles.calendarHeader}>
+                      <button onClick={() => changeMonth(-1)}><ChevronLeft size={18} /></button>
+                      <span className={styles.monthName}>
+                        {currentMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}
+                      </span>
+                      <button onClick={() => changeMonth(1)}><ChevronRight size={18} /></button>
+                    </div>
+
+                    <div className={styles.calendarGrid}>
+                      {['D', 'S', 'T', 'Q', 'Q', 'S', 'S'].map((day, idx) => (
+                        <div key={idx} className={styles.weekdayHeader}>{day}</div>
+                      ))}
+                      {calendarDays.map((day, idx) => (
+                        <div 
+                          key={idx}
+                          onClick={() => handleDayClick(day)}
+                          className={`${styles.dayCell} ${getDayClass(day)}`}
+                        >
+                          {day ? day.getDate() : ''}
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className={styles.calendarActions}>
+                      <button className={styles.clearButton} onClick={clearFilters} style={{ height: 'auto', padding: '0.4rem 0.8rem' }}>
+                        Resetar
+                      </button>
+                      <button className={styles.applyButton} onClick={applyFilters}>
+                        Aplicar
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {(filterStartDate || filterEndDate) && (
+              <button onClick={clearFilters} className={styles.clearButton}>
+                Limpar Filtros
+              </button>
+            )}
+          </div>
+
           {/* Cards de KPIs Dinâmicos */}
           <div className={styles.grid}>
             <div className={styles.card}>
@@ -801,6 +1025,193 @@ export default function Dashboard() {
             )}
           </div>
         </>
+      ) : (
+        /* Análise de Coorte */
+        <div className={styles.cohortContainer}>
+          <div className={styles.cohortHeaderBlock}>
+            <div className={styles.cohortTitleGroup}>
+              <h2 className={styles.cohortTitle}>Coorte Gocase - Reenvio</h2>
+              <span className={styles.cohortMetaInfo}>
+                Gerado em: {new Date().toLocaleDateString('pt-BR')} • Origem: Google Sheets
+              </span>
+            </div>
+            
+            <div className={styles.cohortControls}>
+              <button 
+                className={`${styles.metricBtn} ${cohortMetric === 'receita' ? styles.metricBtnActive : ''}`}
+                onClick={() => setCohortMetric('receita')}
+              >
+                Receita (Total Amount)
+              </button>
+              <button 
+                className={`${styles.metricBtn} ${cohortMetric === 'frete' ? styles.metricBtnActive : ''}`}
+                onClick={() => setCohortMetric('frete')}
+              >
+                Frete
+              </button>
+              <button 
+                className={`${styles.metricBtn} ${cohortMetric === 'quantidade' ? styles.metricBtnActive : ''}`}
+                onClick={() => setCohortMetric('quantidade')}
+              >
+                Quantidade (Reenvios)
+              </button>
+            </div>
+          </div>
+
+          <div className={styles.cohortCard}>
+            <div className={styles.cohortTableWrapper}>
+              <table className={styles.cohortTable}>
+                <thead>
+                  <tr>
+                    <th className={styles.cohortThMain} rowSpan={2}>
+                      Mês do Pedido \ Mês do Reenvio
+                    </th>
+                    <th className={styles.cohortThColHeader} colSpan={cohortMatrix.cols.length}>
+                      Mês do Reenvio
+                    </th>
+                    <th className={styles.cohortThTotalHeader} rowSpan={2}>
+                      TOTAL
+                    </th>
+                  </tr>
+                  <tr>
+                    {cohortMatrix.cols.map(col => (
+                      <th key={col} className={styles.cohortTh}>
+                        {formatMonthPTBR(col)}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {cohortMatrix.rows.map(row => {
+                    const rowTotal = cohortMatrix.rowTotals[row] || 0;
+                    return (
+                      <tr key={row}>
+                        <td className={styles.cohortRowHeader}>
+                          {formatMonthPTBR(row)}
+                        </td>
+                        {cohortMatrix.cols.map(col => {
+                          const val = cohortMatrix.matrix[row]?.[col] || 0;
+                          return (
+                            <td 
+                              key={col} 
+                              className={styles.cohortTd}
+                              style={getCellBgStyle(val, cohortMatrix.maxCellValue)}
+                              title={`Mês Origem: ${formatMonthPTBR(row)}\nMês Reenvio: ${formatMonthPTBR(col)}\nValor: ${formatCohortValue(val)}`}
+                            >
+                              {formatCohortValue(val)}
+                            </td>
+                          );
+                        })}
+                        <td className={styles.cohortTotalCell}>
+                          {formatCohortValue(rowTotal)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  
+                  {/* Linha de Totais Verticais */}
+                  <tr className={styles.cohortTotalRow}>
+                    <td className={styles.cohortRowHeaderTotal}>
+                      TOTAL
+                    </td>
+                    {cohortMatrix.cols.map(col => {
+                      const colTotal = cohortMatrix.colTotals[col] || 0;
+                      return (
+                        <td key={col} className={styles.cohortColTotalCell}>
+                          {formatCohortValue(colTotal)}
+                        </td>
+                      );
+                    })}
+                    <td className={styles.cohortGrandTotalCell}>
+                      {formatCohortValue(cohortMatrix.grandTotal)}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Sincronização Parametrizada (n8n) */}
+      {isSyncModalOpen && (
+        <div className={styles.modalOverlay}>
+          <div className={styles.modalCard}>
+            <div className={styles.modalHeader}>
+              <h3 className={styles.modalTitle}>
+                <Zap size={18} className={isSyncing ? 'pulse' : ''} style={{ color: 'var(--accent-secondary)' }} />
+                Disparar Fluxo n8n
+              </h3>
+              <button 
+                onClick={() => { if (!isSyncing) setIsSyncModalOpen(false); }}
+                className={styles.modalCloseBtn}
+                disabled={isSyncing}
+              >
+                <X size={20} />
+              </button>
+            </div>
+            
+            <form onSubmit={handleSyncSubmit}>
+              <div className={styles.modalBody}>
+                <div className={styles.syncFormGroup}>
+                  <label htmlFor="company-select">Empresa / Marca</label>
+                  <select
+                    id="company-select"
+                    value={syncCompany}
+                    onChange={(e) => setSyncCompany(e.target.value)}
+                    className={styles.syncSelect}
+                    disabled={isSyncing}
+                  >
+                    <option value="lescent">Lescent</option>
+                    <option value="aua">Aua</option>
+                    <option value="bysamia">By Samia</option>
+                    <option value="kokeshi">Kokeshi</option>
+                  </select>
+                </div>
+
+                <div className={styles.syncFormGroup}>
+                  <label htmlFor="year-select">Ano</label>
+                  <select
+                    id="year-select"
+                    value={syncYear}
+                    onChange={(e) => setSyncYear(e.target.value)}
+                    className={styles.syncSelect}
+                    disabled={isSyncing}
+                  >
+                    <option value="todos">Todos os Anos</option>
+                    <option value="2025">2025</option>
+                    <option value="2026">2026</option>
+                  </select>
+                </div>
+
+                {syncMessage && (
+                  <div className={`${styles.syncStatusBanner} ${syncMessage.type === 'success' ? styles.syncStatusSuccess : styles.syncStatusError}`}>
+                    <AlertCircle size={16} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <span>{syncMessage.text}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className={styles.modalFooter}>
+                <button
+                  type="button"
+                  onClick={() => setIsSyncModalOpen(false)}
+                  className={styles.modalCancelBtn}
+                  disabled={isSyncing}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className={styles.modalSubmitBtn}
+                  disabled={isSyncing}
+                >
+                  {isSyncing ? 'Disparando...' : 'Disparar Fluxo'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );
