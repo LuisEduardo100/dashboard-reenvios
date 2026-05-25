@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState, useMemo, useRef } from 'react';
-import { 
-  XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, 
-  BarChart, Bar, PieChart, Pie, Cell, Legend
+import {
+  XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
+  BarChart, Bar, PieChart, Pie, Cell, Legend, ComposedChart, ReferenceLine, Line
 } from 'recharts';
 import { 
   Package, DollarSign, Truck, CalendarClock, AlertCircle, RefreshCw, 
@@ -63,6 +63,83 @@ const formatMonthPTBR = (yyyyMM) => {
   return `${months[month] || month}/${year.slice(2)}`;
 };
 
+const TOOLTIP_STYLE = {
+  backgroundColor: '#13152280',
+  backdropFilter: 'blur(12px)',
+  WebkitBackdropFilter: 'blur(12px)',
+  border: '1px solid rgba(255,255,255,0.12)',
+  borderRadius: '10px',
+  padding: '10px 14px',
+  boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
+  color: '#e2e8f0',
+  fontSize: '13px',
+  lineHeight: 1.5,
+  pointerEvents: 'none',
+};
+
+const TooltipLabel = ({ children }) => (
+  <p style={{ margin: '0 0 6px 0', fontWeight: 600, color: '#fff', fontSize: 13 }}>{children}</p>
+);
+const TooltipRow = ({ color, label, value }) => (
+  <p style={{ margin: '2px 0', color: color || '#a0aec0', fontSize: 12 }}>
+    {label && <span style={{ color: '#a0aec0' }}>{label}: </span>}
+    <span style={{ color: color || '#e2e8f0', fontWeight: 500 }}>{value}</span>
+  </p>
+);
+
+const TooltipTop10 = ({ active, payload }) => {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={{ ...TOOLTIP_STYLE, maxWidth: 280 }}>
+      <TooltipLabel>{d.name}</TooltipLabel>
+      <TooltipRow color="#60a5fa" value={formatCurrency(d.custoTotal)} />
+      <TooltipRow label="reenvios" value={d.count} />
+    </div>
+  );
+};
+
+const TooltipEvolution = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={TOOLTIP_STYLE}>
+      <TooltipLabel>{label}</TooltipLabel>
+      {payload.map((entry) => (
+        entry.dataKey === 'pct'
+          ? <TooltipRow key="pct" color="#E5273C" label="% do total" value={`${entry.value}%`} />
+          : <TooltipRow key="custo" color="#60a5fa" label="Custo frete" value={formatCurrency(entry.value)} />
+      ))}
+    </div>
+  );
+};
+
+const TooltipBarChart = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={TOOLTIP_STYLE}>
+      <TooltipLabel>{label}</TooltipLabel>
+      {payload.map((entry, i) => (
+        <TooltipRow key={i} color={entry.color} label={entry.name} value={
+          typeof entry.value === 'number' && entry.name?.toLowerCase().includes('frete')
+            ? formatCurrency(entry.value)
+            : entry.value
+        } />
+      ))}
+    </div>
+  );
+};
+
+const TooltipPie = ({ active, payload }) => {
+  if (!active || !payload?.length) return null;
+  const d = payload[0];
+  return (
+    <div style={TOOLTIP_STYLE}>
+      <TooltipLabel>{d.name}</TooltipLabel>
+      <TooltipRow color={d.payload?.fill || d.color} value={formatCurrency(d.value)} />
+    </div>
+  );
+};
+
 // Definição dos campos da Tabela para fácil expansão futura
 const TABLE_COLUMNS = [
   { key: 'external_id_original', label: 'ID Original' },
@@ -74,7 +151,8 @@ const TABLE_COLUMNS = [
   { key: 'frete', label: 'Frete', format: formatCurrency },
   { key: 'dias_entre_envios', label: 'Dias Reenvio' },
   { key: 'estado_entrega', label: 'Estado' },
-  { key: 'cd_origem', label: 'CD Origem' }
+  { key: 'cd_origem', label: 'CD Origem' },
+  { key: 'motivo_reenvio', label: 'Motivo' }
 ];
 
 
@@ -113,6 +191,8 @@ export default function Dashboard() {
 
   const [activeTab, setActiveTab] = useState('geral');
   const [cohortMetric, setCohortMetric] = useState('receita');
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [selectedMotivo, setSelectedMotivo] = useState('');
 
   const popoverRef = useRef(null);
 
@@ -425,6 +505,66 @@ export default function Dashboard() {
     };
   }, [validData, cohortMetric]);
 
+  // Meses disponíveis nos dados (para o seletor rápido)
+  const availableMonths = useMemo(() => {
+    const monthSet = new Set();
+    validData.forEach(item => {
+      const d = new Date(item.data_criacao_original);
+      if (!isNaN(d.getTime())) {
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+        monthSet.add(key);
+      }
+    });
+    return Array.from(monthSet).sort();
+  }, [validData]);
+
+  // Top 10 motivos por custo total de frete
+  const chartTop10Motivos = useMemo(() => {
+    const map = {};
+    filteredData.forEach(item => {
+      const motivo = (item.motivo_reenvio && item.motivo_reenvio.trim()) || 'Sem motivo';
+      if (!map[motivo]) map[motivo] = { custoTotal: 0, count: 0 };
+      map[motivo].custoTotal += parseCurrencyValue(item.frete);
+      map[motivo].count++;
+    });
+    return Object.entries(map)
+      .map(([name, val]) => ({ name, custoTotal: val.custoTotal, count: val.count }))
+      .sort((a, b) => b.custoTotal - a.custoTotal)
+      .slice(0, 10);
+  }, [filteredData]);
+
+  // Evolução mensal do motivo selecionado
+  const chartMotivoEvolution = useMemo(() => {
+    if (!selectedMotivo) return [];
+    const monthMap = {};
+    const totalByMonth = {};
+    validData.forEach(item => {
+      const d = new Date(item.data_criacao_original);
+      if (isNaN(d.getTime())) return;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      const custo = parseCurrencyValue(item.frete);
+      totalByMonth[key] = (totalByMonth[key] || 0) + custo;
+      const motivo = (item.motivo_reenvio && item.motivo_reenvio.trim()) || 'Sem motivo';
+      if (motivo !== selectedMotivo) return;
+      if (!monthMap[key]) monthMap[key] = { custo: 0, count: 0 };
+      monthMap[key].custo += custo;
+      monthMap[key].count++;
+    });
+    return Object.entries(monthMap)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([month, val]) => ({
+        month: formatMonthPTBR(month),
+        custo: val.custo,
+        pct: totalByMonth[month] > 0 ? parseFloat(((val.custo / totalByMonth[month]) * 100).toFixed(1)) : 0,
+        count: val.count
+      }));
+  }, [validData, selectedMotivo]);
+
+  const avgCustoMotivo = useMemo(() => {
+    if (!chartMotivoEvolution.length) return 0;
+    return chartMotivoEvolution.reduce((s, d) => s + d.custo, 0) / chartMotivoEvolution.length;
+  }, [chartMotivoEvolution]);
+
   const getCellBgStyle = (value, maxVal) => {
     if (!value || maxVal === 0) return {};
     const opacity = 0.05 + (value / maxVal) * 0.75;
@@ -441,6 +581,25 @@ export default function Dashboard() {
       return new Intl.NumberFormat('pt-BR').format(val);
     }
     return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', minimumFractionDigits: 2 }).format(val);
+  };
+
+  // Filtro rápido por mês
+  const handleMonthFilter = (monthKey) => {
+    setSelectedMonth(monthKey);
+    if (!monthKey) {
+      setFilterStartDate(null);
+      setFilterEndDate(null);
+      setActiveQuickFilter('');
+      return;
+    }
+    const [y, m] = monthKey.split('-').map(Number);
+    const start = new Date(y, m - 1, 1);
+    const end = new Date(y, m, 0);
+    setTempStartDate(start);
+    setTempEndDate(end);
+    setFilterStartDate(start);
+    setFilterEndDate(end);
+    setActiveQuickFilter('');
   };
 
   // Configuração do Ordenamento
@@ -593,6 +752,7 @@ export default function Dashboard() {
     setFilterStartDate(null);
     setFilterEndDate(null);
     setActiveQuickFilter('');
+    setSelectedMonth('');
   };
 
   const getFilterText = () => {
@@ -682,13 +842,19 @@ export default function Dashboard() {
 
       {/* Navegação por Abas */}
       <div className={styles.tabContainer}>
-        <button 
+        <button
           onClick={() => setActiveTab('geral')}
           className={`${styles.tabButton} ${activeTab === 'geral' ? styles.tabButtonActive : ''}`}
         >
           Visão Geral
         </button>
-        <button 
+        <button
+          onClick={() => setActiveTab('motivos')}
+          className={`${styles.tabButton} ${activeTab === 'motivos' ? styles.tabButtonActive : ''}`}
+        >
+          Análise de Motivos
+        </button>
+        <button
           onClick={() => setActiveTab('coorte')}
           className={`${styles.tabButton} ${activeTab === 'coorte' ? styles.tabButtonActive : ''}`}
         >
@@ -797,6 +963,21 @@ export default function Dashboard() {
               )}
             </div>
 
+            <div className={styles.filterGroup}>
+              <label>Mês</label>
+              <select
+                value={selectedMonth}
+                onChange={(e) => handleMonthFilter(e.target.value)}
+                className={styles.pageSelect}
+                style={{ minWidth: '140px' }}
+              >
+                <option value="">Todos os meses</option>
+                {availableMonths.map(m => (
+                  <option key={m} value={m}>{formatMonthPTBR(m)}</option>
+                ))}
+              </select>
+            </div>
+
             {(filterStartDate || filterEndDate) && (
               <button onClick={clearFilters} className={styles.clearButton}>
                 Limpar Filtros
@@ -855,10 +1036,7 @@ export default function Dashboard() {
                     <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
                     <XAxis dataKey="name" stroke="var(--text-secondary)" tick={{fill: 'var(--text-secondary)'}} />
                     <YAxis stroke="var(--text-secondary)" tick={{fill: 'var(--text-secondary)'}} />
-                    <RechartsTooltip 
-                      contentStyle={{ backgroundColor: 'var(--bg-secondary)', border: 'var(--glass-border)', borderRadius: '8px' }}
-                      itemStyle={{ color: 'var(--text-primary)' }}
-                    />
+                    <RechartsTooltip content={<TooltipBarChart />} />
                     <Bar dataKey="Reenvios" radius={[4, 4, 0, 0]}>
                       {chartDaysDist.map((entry, index) => (
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
@@ -888,9 +1066,7 @@ export default function Dashboard() {
                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                       ))}
                     </Pie>
-                    <RechartsTooltip 
-                      contentStyle={{ backgroundColor: 'var(--bg-secondary)', border: 'var(--glass-border)', borderRadius: '8px' }}
-                    />
+                    <RechartsTooltip content={<TooltipPie />} />
                     <Legend verticalAlign="bottom" height={36} wrapperStyle={{ color: 'var(--text-secondary)' }}/>
                   </PieChart>
                 </ResponsiveContainer>
@@ -1022,6 +1198,169 @@ export default function Dashboard() {
                   </select>
                 </div>
               </div>
+            )}
+          </div>
+        </>
+      ) : activeTab === 'motivos' ? (
+        /* Análise de Motivos */
+        <>
+          {/* Filtro de Período (reutilizado) */}
+          <div className={styles.filterSection}>
+            <div className={styles.filterGroup} ref={popoverRef}>
+              <label>Filtrar por Período</label>
+              <div className={styles.dateDisplayInput} onClick={() => setIsCalendarOpen(!isCalendarOpen)}>
+                <span>{getFilterText()}</span>
+                <Calendar size={18} color="var(--accent-primary)" />
+              </div>
+              {isCalendarOpen && (
+                <div className={styles.calendarPopover}>
+                  <div className={styles.calendarSidebar}>
+                    {['hoje','7dias','semana','mes','tudo'].map(t => (
+                      <button key={t} onClick={() => applyQuickFilter(t)}
+                        className={`${styles.quickFilterBtn} ${activeQuickFilter === t ? styles.quickFilterBtnActive : ''}`}>
+                        {t === 'hoje' ? 'Hoje' : t === '7dias' ? 'Últimos 7 dias' : t === 'semana' ? 'Esta Semana' : t === 'mes' ? 'Este Mês' : 'Limpar Tudo'}
+                      </button>
+                    ))}
+                  </div>
+                  <div className={styles.calendarMain}>
+                    <div className={styles.calendarHeader}>
+                      <button onClick={() => changeMonth(-1)}><ChevronLeft size={18} /></button>
+                      <span className={styles.monthName}>{currentMonth.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' })}</span>
+                      <button onClick={() => changeMonth(1)}><ChevronRight size={18} /></button>
+                    </div>
+                    <div className={styles.calendarGrid}>
+                      {['D','S','T','Q','Q','S','S'].map((d, i) => <div key={i} className={styles.weekdayHeader}>{d}</div>)}
+                      {calendarDays.map((day, idx) => (
+                        <div key={idx} onClick={() => handleDayClick(day)} className={`${styles.dayCell} ${getDayClass(day)}`}>
+                          {day ? day.getDate() : ''}
+                        </div>
+                      ))}
+                    </div>
+                    <div className={styles.calendarActions}>
+                      <button className={styles.clearButton} onClick={clearFilters} style={{ height: 'auto', padding: '0.4rem 0.8rem' }}>Resetar</button>
+                      <button className={styles.applyButton} onClick={applyFilters}>Aplicar</button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className={styles.filterGroup}>
+              <label>Mês</label>
+              <select value={selectedMonth} onChange={(e) => handleMonthFilter(e.target.value)} className={styles.pageSelect} style={{ minWidth: '140px' }}>
+                <option value="">Todos os meses</option>
+                {availableMonths.map(m => <option key={m} value={m}>{formatMonthPTBR(m)}</option>)}
+              </select>
+            </div>
+            {(filterStartDate || filterEndDate) && (
+              <button onClick={clearFilters} className={styles.clearButton}>Limpar Filtros</button>
+            )}
+          </div>
+
+          {/* Top 10 Motivos - Custo Total */}
+          <div className={styles.chartCard} style={{ marginBottom: '1.5rem' }}>
+            <h3 className={styles.chartTitle}>Top 10 Motivos por Custo Total de Frete</h3>
+            {chartTop10Motivos.length === 0 ? (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                Sem dados de motivo no período selecionado.
+              </div>
+            ) : (
+              <div style={{ height: Math.max(300, chartTop10Motivos.length * 44) }}>
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart layout="vertical" data={chartTop10Motivos} margin={{ left: 16, right: 80, top: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" horizontal={false} />
+                    <XAxis type="number" stroke="var(--text-secondary)" tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+                      tickFormatter={(v) => `R$${(v / 1000).toFixed(0)}k`} />
+                    <YAxis type="category" dataKey="name" width={180} stroke="var(--text-secondary)"
+                      tick={{ fill: 'var(--text-secondary)', fontSize: 11 }} />
+                    <RechartsTooltip content={<TooltipTop10 />} />
+                    <Bar dataKey="custoTotal" radius={[0, 4, 4, 0]} name="Custo Total (Frete)"
+                      onClick={(d) => setSelectedMotivo(d.name === selectedMotivo ? '' : d.name)}>
+                      {chartTop10Motivos.map((entry, index) => (
+                        <Cell key={index}
+                          fill={entry.name === selectedMotivo ? '#E5273C' : COLORS[index % COLORS.length]}
+                          opacity={selectedMotivo && entry.name !== selectedMotivo ? 0.5 : 1}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.5rem', paddingLeft: '0.5rem' }}>
+              Clique em uma barra para ver a evolução mensal do motivo.
+            </p>
+          </div>
+
+          {/* Evolução Mensal do Motivo Selecionado */}
+          <div className={styles.chartCard}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '1rem', flexWrap: 'wrap' }}>
+              <h3 className={styles.chartTitle} style={{ margin: 0 }}>Evolução por Motivo</h3>
+              <select
+                value={selectedMotivo}
+                onChange={(e) => setSelectedMotivo(e.target.value)}
+                className={styles.pageSelect}
+                style={{ minWidth: '220px' }}
+              >
+                <option value="">Selecione um motivo</option>
+                {chartTop10Motivos.map(m => (
+                  <option key={m.name} value={m.name}>{m.name}</option>
+                ))}
+              </select>
+              {selectedMotivo && (
+                <button onClick={() => setSelectedMotivo('')} className={styles.clearButton} style={{ height: 'auto', padding: '0.3rem 0.7rem' }}>
+                  Limpar
+                </button>
+              )}
+            </div>
+
+            {!selectedMotivo ? (
+              <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                Selecione um motivo acima ou clique em uma barra do gráfico para ver a evolução mensal.
+              </div>
+            ) : chartMotivoEvolution.length === 0 ? (
+              <div style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-secondary)' }}>
+                Sem dados mensais para "{selectedMotivo}".
+              </div>
+            ) : (
+              <>
+                <div style={{ display: 'flex', gap: '2rem', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 12, background: '#2659A5', borderRadius: 2, marginRight: 4 }}></span>
+                    Custo Frete (eixo direito — R$)
+                  </span>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 2, background: '#E5273C', marginRight: 4, verticalAlign: 'middle' }}></span>
+                    % do custo total do mês (eixo esquerdo)
+                  </span>
+                  <span style={{ fontSize: '0.8rem', color: '#f59e0b' }}>
+                    <span style={{ display: 'inline-block', width: 12, height: 2, background: '#f59e0b', marginRight: 4, verticalAlign: 'middle', borderTop: '2px dashed #f59e0b' }}></span>
+                    Média do período
+                  </span>
+                </div>
+                <div className={styles.chartWrapper}>
+                  <ResponsiveContainer width="100%" height="100%">
+                    <ComposedChart data={chartMotivoEvolution} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="var(--border-color)" vertical={false} />
+                      <XAxis dataKey="month" stroke="var(--text-secondary)" tick={{ fill: 'var(--text-secondary)', fontSize: 12 }} />
+                      <YAxis yAxisId="left" orientation="left" stroke="#E5273C"
+                        tick={{ fill: '#E5273C', fontSize: 11 }}
+                        tickFormatter={(v) => `${v}%`}
+                        domain={[0, 100]}
+                      />
+                      <YAxis yAxisId="right" orientation="right" stroke="var(--text-secondary)"
+                        tick={{ fill: 'var(--text-secondary)', fontSize: 11 }}
+                        tickFormatter={(v) => v >= 1000 ? `R$${(v / 1000).toFixed(1)}k` : `R$${v.toFixed(0)}`}
+                      />
+                      <RechartsTooltip content={<TooltipEvolution />} />
+                      <Bar yAxisId="right" dataKey="custo" fill="#2659A5" radius={[4, 4, 0, 0]} name="custo" />
+                      <Line yAxisId="left" type="monotone" dataKey="pct" stroke="#E5273C" strokeWidth={2} dot={{ fill: '#E5273C', r: 4 }} name="pct" />
+                      <ReferenceLine yAxisId="right" y={avgCustoMotivo} stroke="#f59e0b" strokeDasharray="4 4" strokeWidth={2}
+                        label={{ value: `Média: ${formatCurrency(avgCustoMotivo)}`, fill: '#f59e0b', fontSize: 11, position: 'insideTopRight' }}
+                      />
+                    </ComposedChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
             )}
           </div>
         </>

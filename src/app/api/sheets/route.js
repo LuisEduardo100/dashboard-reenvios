@@ -19,7 +19,7 @@ export async function GET(request) {
     }
 
     const credentials = JSON.parse(credentialsStr);
-    
+
     // Map company to spreadsheet ID
     let spreadsheetId = '';
     const compKey = company.toLowerCase().trim();
@@ -52,10 +52,10 @@ export async function GET(request) {
     });
 
     const sheets = google.sheets({ version: 'v4', auth });
-    
+
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Reenvios e Envios!A:R', // A ao R cobre as colunas mencionadas
+      range: 'Reenvios e Envios!A:W', // A ao W cobre todas as colunas incluindo motivo_metabase e motivo_forms
     });
 
     const rows = response.data.values;
@@ -79,4 +79,3 @@ export async function GET(request) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
-
