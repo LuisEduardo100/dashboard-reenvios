@@ -10,6 +10,7 @@ import {
   ChevronLeft, ChevronRight, Calendar, ArrowUpDown, ArrowUp, ArrowDown, X, Zap
 } from 'lucide-react';
 import styles from './page.module.css';
+import * as XLSX from 'xlsx';
 
 const COLORS = ['#2659A5', '#E5273C', '#10b981', '#f59e0b', '#8b5cf6'];
 
@@ -163,6 +164,10 @@ export default function Dashboard() {
 
   // Marca ativa para visualização no Dashboard
   const [selectedBrand, setSelectedBrand] = useState('lescent');
+
+  // Estados para exportação CSV
+  const [exportBrand, setExportBrand] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
 
   // Estados para Sincronização via n8n
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
@@ -373,6 +378,140 @@ export default function Dashboard() {
   useEffect(() => {
     setCurrentPage(1);
   }, [filteredData, sortConfig]);
+
+  // Exportação CSV
+  const exportToCSV = async () => {
+    const brand = exportBrand || selectedBrand;
+    setIsExporting(true);
+    try {
+      let rows;
+      if (brand === selectedBrand) {
+        rows = filteredData;
+      } else {
+        const res = await fetch(`/api/sheets?company=${brand}`);
+        const json = await res.json();
+        rows = (json.data || []).filter(item => item.external_id_original);
+      }
+
+      if (!rows.length) { alert('Nenhum dado encontrado para exportar.'); return; }
+
+      const EXPORT_COLS = [
+        { key: 'empresa',               label: 'Empresa' },
+        { key: 'external_id_original',  label: 'ID Original' },
+        { key: 'external_id_reenvio',   label: 'ID Reenvio' },
+        { key: 'cliente_nome',          label: 'Cliente' },
+        { key: 'data_criacao_original', label: 'Data Criação Original' },
+        { key: 'data_envio_original',   label: 'Data Envio Original' },
+        { key: 'data_entrega_original', label: 'Data Entrega Original' },
+        { key: 'data_criacao_reenvio',  label: 'Data Criação Reenvio' },
+        { key: 'data_envio_reenvio',    label: 'Data Envio Reenvio' },
+        { key: 'data_entrega_reenvio',  label: 'Data Entrega Reenvio' },
+        { key: 'dias_entre_envios',     label: 'Dias Entre Envios' },
+        { key: 'total_amount',          label: 'Valor Total (R$)' },
+        { key: 'frete',                 label: 'Frete (R$)' },
+        { key: 'estado_entrega',        label: 'Estado Entrega' },
+        { key: 'cd_origem',             label: 'CD Origem' },
+        { key: 'motivo_reenvio',        label: 'Motivo Reenvio' },
+        { key: 'motivo_forms',          label: 'Motivo (Forms)' },
+        { key: 'motivo_metabase',       label: 'Motivo (Metabase)' },
+        { key: 'invoice_original',      label: 'Invoice Original' },
+        { key: 'invoice_reenvio',       label: 'Invoice Reenvio' },
+        { key: 'data_extracao',         label: 'Data Extração' },
+      ];
+
+      const escape = (v) => {
+        if (v == null) return '';
+        const s = String(v).replace(/"/g, '""');
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s}"` : s;
+      };
+
+      const header = EXPORT_COLS.map(c => c.label).join(',');
+      const csvRows = rows.map(row =>
+        EXPORT_COLS.map(c => escape(row[c.key])).join(',')
+      );
+
+      const bom = '﻿'; // BOM para Excel reconhecer UTF-8
+      const csv = bom + [header, ...csvRows].join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reenvios_${brand}_${new Date().toISOString().slice(0,10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Erro ao exportar: ' + e.message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
+  // Exportação XLSX
+  const exportToXLSX = async () => {
+    const brand = exportBrand || selectedBrand;
+    setIsExporting(true);
+    try {
+      let rows;
+      if (brand === selectedBrand) {
+        rows = filteredData;
+      } else {
+        const res = await fetch(`/api/sheets?company=${brand}`);
+        const json = await res.json();
+        rows = (json.data || []).filter(item => item.external_id_original);
+      }
+
+      if (!rows.length) { alert('Nenhum dado encontrado para exportar.'); return; }
+
+      const EXPORT_COLS = [
+        { key: 'empresa',               label: 'Empresa',                 width: 14 },
+        { key: 'external_id_original',  label: 'ID Original',             width: 18 },
+        { key: 'external_id_reenvio',   label: 'ID Reenvio',              width: 18 },
+        { key: 'cliente_nome',          label: 'Cliente',                 width: 28 },
+        { key: 'data_criacao_original', label: 'Data Criação Original',   width: 22 },
+        { key: 'data_envio_original',   label: 'Data Envio Original',     width: 22 },
+        { key: 'data_entrega_original', label: 'Data Entrega Original',   width: 22 },
+        { key: 'data_criacao_reenvio',  label: 'Data Criação Reenvio',    width: 22 },
+        { key: 'data_envio_reenvio',    label: 'Data Envio Reenvio',      width: 22 },
+        { key: 'data_entrega_reenvio',  label: 'Data Entrega Reenvio',    width: 22 },
+        { key: 'dias_entre_envios',     label: 'Dias Entre Envios',       width: 18 },
+        { key: 'total_amount',          label: 'Valor Total (R$)',        width: 18 },
+        { key: 'frete',                 label: 'Frete (R$)',              width: 14 },
+        { key: 'estado_entrega',        label: 'Estado Entrega',          width: 16 },
+        { key: 'cd_origem',             label: 'CD Origem',               width: 14 },
+        { key: 'motivo_reenvio',        label: 'Motivo Reenvio',          width: 30 },
+        { key: 'motivo_forms',          label: 'Motivo (Forms)',          width: 30 },
+        { key: 'motivo_metabase',       label: 'Motivo (Metabase)',       width: 30 },
+        { key: 'invoice_original',      label: 'Invoice Original',        width: 18 },
+        { key: 'invoice_reenvio',       label: 'Invoice Reenvio',         width: 18 },
+        { key: 'data_extracao',         label: 'Data Extração',           width: 20 },
+      ];
+
+      const sheetRows = rows.map(row => {
+        const obj = {};
+        EXPORT_COLS.forEach(c => { obj[c.label] = row[c.key] ?? ''; });
+        return obj;
+      });
+
+      const ws = XLSX.utils.json_to_sheet(sheetRows, { header: EXPORT_COLS.map(c => c.label) });
+      ws['!cols'] = EXPORT_COLS.map(c => ({ wch: c.width }));
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Reenvios');
+
+      const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const blob = new Blob([wbout], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `reenvios_${brand}_${new Date().toISOString().slice(0,10)}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert('Erro ao exportar: ' + e.message);
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   // Paginação dos dados ordenados e filtrados
   const paginatedData = useMemo(() => {
@@ -1078,6 +1217,57 @@ export default function Dashboard() {
           <div className={styles.tableCard}>
             <div className={styles.tableHeader}>
               <h3 className={styles.tableTitle}>Registros de Envios e Reenvios ({filteredData.length})</h3>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+                <select
+                  value={exportBrand || selectedBrand}
+                  onChange={e => setExportBrand(e.target.value)}
+                  className={styles.pageSelect}
+                  style={{ fontSize: '13px', padding: '6px 10px', minWidth: 110 }}
+                >
+                  <option value="lescent">Lescent</option>
+                  <option value="aua">Aua</option>
+                  <option value="bysamia">By Samia</option>
+                  <option value="kokeshi">Kokeshi</option>
+                </select>
+                <button
+                  onClick={exportToCSV}
+                  disabled={isExporting}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '6px 14px', borderRadius: '8px', border: 'none',
+                    background: isExporting ? 'rgba(38,89,165,0.4)' : '#2659A5',
+                    color: '#fff', fontSize: '13px', fontWeight: 500,
+                    cursor: isExporting ? 'not-allowed' : 'pointer',
+                    whiteSpace: 'nowrap', transition: 'background 0.2s',
+                  }}
+                >
+                  {isExporting ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  )}
+                  {isExporting ? 'Exportando…' : 'CSV'}
+                </button>
+                <button
+                  onClick={exportToXLSX}
+                  disabled={isExporting}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '6px',
+                    padding: '6px 14px', borderRadius: '8px', border: 'none',
+                    background: isExporting ? 'rgba(16,185,129,0.3)' : '#10b981',
+                    color: '#fff', fontSize: '13px', fontWeight: 500,
+                    cursor: isExporting ? 'not-allowed' : 'pointer',
+                    whiteSpace: 'nowrap', transition: 'background 0.2s',
+                  }}
+                >
+                  {isExporting ? (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                  ) : (
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  )}
+                  {isExporting ? 'Exportando…' : 'XLSX'}
+                </button>
+              </div>
             </div>
             
             <div className={styles.tableWrapper}>
