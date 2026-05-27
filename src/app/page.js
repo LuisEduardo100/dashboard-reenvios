@@ -954,10 +954,11 @@ export default function Dashboard() {
               <option value="aua">Aua</option>
               <option value="bysamia">By Samia</option>
               <option value="kokeshi">Kokeshi</option>
+              <option value="apice">Ápice</option>
             </select>
           </div>
 
-          <button 
+          <button
             className={styles.clearButton} 
             onClick={() => fetchData(selectedBrand)} 
             disabled={loading || isSyncing}
@@ -1228,6 +1229,7 @@ export default function Dashboard() {
                   <option value="aua">Aua</option>
                   <option value="bysamia">By Samia</option>
                   <option value="kokeshi">Kokeshi</option>
+                  <option value="apice">Ápice</option>
                 </select>
                 <button
                   onClick={exportToCSV}
@@ -1695,6 +1697,7 @@ export default function Dashboard() {
                     <option value="aua">Aua</option>
                     <option value="bysamia">By Samia</option>
                     <option value="kokeshi">Kokeshi</option>
+                    <option value="apice">Ápice</option>
                   </select>
                 </div>
 

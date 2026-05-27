@@ -31,6 +31,8 @@ export async function GET(request) {
       spreadsheetId = process.env.SPREADSHEET_ID_BYSAMIA || process.env.SPREADSHEET_ID;
     } else if (compKey === 'kokeshi') {
       spreadsheetId = process.env.SPREADSHEET_ID_KOKESHI || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'apice') {
+      spreadsheetId = process.env.SPREADSHEET_ID_APICE || process.env.SPREADSHEET_ID;
     } else {
       spreadsheetId = process.env.SPREADSHEET_ID;
     }
