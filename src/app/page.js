@@ -955,6 +955,8 @@ export default function Dashboard() {
               <option value="bysamia">By Samia</option>
               <option value="kokeshi">Kokeshi</option>
               <option value="apice">Ápice</option>
+              <option value="barbours">Barbours</option>
+              <option value="rituaria">Rituaria</option>
             </select>
           </div>
 
@@ -1230,6 +1232,8 @@ export default function Dashboard() {
                   <option value="bysamia">By Samia</option>
                   <option value="kokeshi">Kokeshi</option>
                   <option value="apice">Ápice</option>
+                  <option value="barbours">Barbours</option>
+                  <option value="rituaria">Rituaria</option>
                 </select>
                 <button
                   onClick={exportToCSV}
@@ -1698,6 +1702,8 @@ export default function Dashboard() {
                     <option value="bysamia">By Samia</option>
                     <option value="kokeshi">Kokeshi</option>
                     <option value="apice">Ápice</option>
+                    <option value="barbours">Barbours</option>
+                    <option value="rituaria">Rituaria</option>
                   </select>
                 </div>
 

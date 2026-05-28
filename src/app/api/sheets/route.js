@@ -33,6 +33,10 @@ export async function GET(request) {
       spreadsheetId = process.env.SPREADSHEET_ID_KOKESHI || process.env.SPREADSHEET_ID;
     } else if (compKey === 'apice') {
       spreadsheetId = process.env.SPREADSHEET_ID_APICE || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'barbours') {
+      spreadsheetId = process.env.SPREADSHEET_ID_BARBOURS || process.env.SPREADSHEET_ID;
+    } else if (compKey === 'rituaria') {
+      spreadsheetId = process.env.SPREADSHEET_ID_RITUARIA || process.env.SPREADSHEET_ID;
     } else {
       spreadsheetId = process.env.SPREADSHEET_ID;
     }
@@ -55,9 +59,13 @@ export async function GET(request) {
 
     const sheets = google.sheets({ version: 'v4', auth });
 
+    const sheetTab = compKey === 'apice'
+      ? 'Reenvios e Envios Apice Intellipost'
+      : 'Reenvios e Envios';
+
     const response = await sheets.spreadsheets.values.get({
       spreadsheetId,
-      range: 'Reenvios e Envios!A:W', // A ao W cobre todas as colunas incluindo motivo_metabase e motivo_forms
+      range: `${sheetTab}!A:W`,
     });
 
     const rows = response.data.values;
